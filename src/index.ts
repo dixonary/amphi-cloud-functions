@@ -21,8 +21,8 @@ const FRONTEND_URL       = 'https://amphi-compsoc.web.app';
 
 const UWCS_URI_TOKEN     = 'https://uwcs.co.uk/o/token/';
 const UWCS_URI_AUTHORIZE = 'https://uwcs.co.uk/o/authorize/';
-const UWCS_URI_REDIRECT  = FRONTEND_URL + "/auth/login";
 const UWCS_URI_PROFILE   = `https://uwcs.co.uk/api/me`;
+const UWCS_URI_REDIRECT  = FRONTEND_URL + "/auth/login";
 const UWCS_SCOPES        = ['lanapp'];
 
 const AMPHI_BACKEND_TIMER_ENDPOINT = 'https://amphi.dixonary.co.uk';
@@ -33,12 +33,10 @@ const UWCS_CLIENT_ID     = functions.config().uwcs.id;
 const UWCS_CLIENT_SECRET = functions.config().uwcs.secret;
 const GOOGLE_API_KEY     = functions.config().gapi.key;
 
-
 const youtube = google.youtube({
   auth: GOOGLE_API_KEY,
   version: "v3"
 });
-
 
 /******************************************************************************/
 // Redirects the User to the uwcs consent screen.
