@@ -22,7 +22,6 @@ const FRONTEND_URL       = 'https://amphi-compsoc.web.app';
 const UWCS_URI_TOKEN     = 'https://uwcs.co.uk/o/token/';
 const UWCS_URI_AUTHORIZE = 'https://uwcs.co.uk/o/authorize/';
 const UWCS_URI_PROFILE   = `https://uwcs.co.uk/api/me`;
-const UWCS_URI_REDIRECT  = FRONTEND_URL + "/auth/login";
 const UWCS_SCOPES        = ['lanapp'];
 
 const AMPHI_BACKEND_TIMER_ENDPOINT = 'https://amphi.dixonary.co.uk';
@@ -43,7 +42,10 @@ const youtube = google.youtube({
 
 exports.uwcsAuth = functions.https.onRequest((req, res) => {
 
-  res.set('Access-Control-Allow-Origin', FRONTEND_URL)
+  const from = (req.query.host ?? FRONTEND_URL);
+  const redirect_uri = from + "/auth/login";
+
+  res.set('Access-Control-Allow-Origin' , from)
      .set('Access-Control-Allow-Methods', 'GET, POST')
      .set('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
 
@@ -55,7 +57,7 @@ exports.uwcsAuth = functions.https.onRequest((req, res) => {
   const params = Querystring.stringify({
     'grant_type'     : 'authorization_code',
     'response_type'  : 'code',
-    'redirect_uri'   : UWCS_URI_REDIRECT,
+    'redirect_uri'   : redirect_uri,
     'client_id'      : UWCS_CLIENT_ID,
     'scope'          : UWCS_SCOPES
   });
@@ -70,7 +72,12 @@ exports.uwcsAuth = functions.https.onRequest((req, res) => {
 // Callback to finish authorizing with OAuth v2.
 exports.uwcsAuthCallback = functions.https.onRequest(async (req, res) =>  {
 
-  res.set('Access-Control-Allow-Origin', FRONTEND_URL)
+  // Grab the code from the request parameters
+  const code = req.query.code;
+  const from = (req.query.host ?? FRONTEND_URL);
+  const redirect_uri = from + "/auth/login";
+
+  res.set('Access-Control-Allow-Origin', from)
      .set('Access-Control-Allow-Methods', 'GET, POST')
      .set('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
 
@@ -79,14 +86,11 @@ exports.uwcsAuthCallback = functions.https.onRequest(async (req, res) =>  {
     return;
   }
 
-  // Grab the code from the request parameters
-  const code = req.query.code;
-
   // Make a request to the oauth server for a new key
   const form = new FormData();
   form.append('grant_type'   ,'authorization_code');
   form.append('code'         , code);
-  form.append('redirect_uri' , UWCS_URI_REDIRECT);
+  form.append('redirect_uri' , redirect_uri);
   form.append('client_id'    , UWCS_CLIENT_ID);
   form.append('client_secret', UWCS_CLIENT_SECRET);
 
@@ -138,22 +142,35 @@ async function createFirebaseAccount(
     // If user does not exists we create it.
     if (error.code === 'auth/user-not-found') {
       return admin.auth().createUser({
-        uid: uid,
+        uid,
         displayName: nickname
       });
     }
     throw error;
   });
 
-  // Save the access token tot he Firebase Realtime Database.
-  const storeAccessToken = admin.firestore()
-    .collection('tokens')
-    .doc(uid)
+  // Store the user's oauth-grabbed info in the database.
+  const storeUserInDatabase = admin.database()
+    .ref(`users/${uid}`)
+    .update({
+      uid,
+      displayName:nickname
+    });
+
+  // Save the access token to the Firebase Realtime Database.
+  const storeAccessToken = admin.database()
+    .ref(`tokens/${uid}`)
     .set({"access_token":accessToken, "refresh_token":refreshToken});
 
-  await Promise.all([createUserAccount, storeAccessToken]);
+  await Promise.all([createUserAccount, storeAccessToken, storeUserInDatabase]);
 
-  return await admin.auth().createCustomToken(uid);
+  // Todo: replace with the exec value from the OAuth scope
+  const admins = ["uwcs:1300831"];
+  const isAdmin = admins.indexOf(uid) !== -1;
+  if(isAdmin) 
+    await admin.database().ref(`users/${uid}/isAdmin`).set(true);
+
+  return await admin.auth().createCustomToken(uid, {isAdmin});
 
 }
 
