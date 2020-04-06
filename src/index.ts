@@ -165,7 +165,12 @@ async function createFirebaseAccount(
   await Promise.all([createUserAccount, storeAccessToken, storeUserInDatabase]);
 
   // Todo: replace with the exec value from the OAuth scope
-  const admins = ["uwcs:1300831"];
+  const admins = [
+    "uwcs:1300831", //dixonary
+    "uwcs:1833194", //john
+    "uwcs:1605235", //thebruce
+    "uwcs:1618643", //distributive_law
+   ];
   const isAdmin = admins.indexOf(uid) !== -1;
   if(isAdmin) 
     await admin.database().ref(`users/${uid}/isAdmin`).set(true);
@@ -303,6 +308,10 @@ async function updateGlobalPlaylist() {
   const queuesRef  = admin.database().ref('queues');
   const bucketsRef = admin.database().ref('buckets');
   const playedRef  = admin.database().ref('played');
+  const usersRef   = admin.database().ref('users');
+
+  // Kinda sucks but also kinda unavoidable?
+  const users = (await usersRef.once('value')).val();
 
   // List of UIDs which are blacklisted from the first bucket,
   // because their videos have been played already.
@@ -337,7 +346,8 @@ async function updateGlobalPlaylist() {
       allBuckets[relIdx].push({
         video, 
         queuedAt,
-        queuedBy:snapshot.key
+        queuedBy:snapshot.key,
+        queuedByDisplayName:users[snapshot.key??""]?.displayName
       });
       idx++;
     });
