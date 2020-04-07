@@ -250,7 +250,41 @@ exports.onEnqueue = functions.database
   .onCreate((snapshot) => addMetadataAndUpdateGlobalPlaylist(snapshot));
 
 async function addMetadataAndUpdateGlobalPlaylist(snapshot:DataSnapshot) {
-  await snapshot.ref.child('queuedAt').set(Date.now());
+
+  const videoId = snapshot.val()?.video;
+  if(videoId === null || videoId === undefined) return;
+
+  // Disallow if the video is on the blacklist
+  const blacklistRef = admin.database().ref(`blacklist/${videoId}`);
+  const blacklisted = (await blacklistRef.once('value')).val();
+
+  if(blacklisted) {
+    await snapshot.ref.remove();
+    return;
+  }
+
+  // Disallow if a video was played too recently
+  const now = Date.now();
+  const minTimeDiffRef = admin.database().ref(`settings/minTimeDiff`);
+  const minTimeDiff = (await minTimeDiffRef.once('value')).val();
+  const lastPlayedRef = admin.database().ref(`lastPlayed/${videoId}`);
+  const then = await (await lastPlayedRef.once('value')).val();
+
+  if(then !== null && then !== undefined && now - then < minTimeDiff * 1000) {
+    await snapshot.ref.remove();
+    return;
+  }
+
+  // Disallow if a song is already enqueued
+  const allQueuedRef = admin.database().ref(`allQueued`);
+  const allQueued = (await allQueuedRef.once('value')).val();
+  if(allQueued !== null && allQueued.indexOf(videoId) !== -1) {
+    await snapshot.ref.remove();
+    return;
+  }
+
+  // Set the queued-time to now and add the song to the main playlist.
+  await snapshot.ref.child('queuedAt').set(now);
   await updateGlobalPlaylist();
 }
 
@@ -317,12 +351,15 @@ async function updateGlobalPlaylist() {
   // because their videos have been played already.
   const alreadyPlayed = (((await playedRef.once('value')).val()) as string[] | null)??[];
 
+
   const queues     = (await queuesRef.once('value')); 
 
   // Storage for new buckets to be generated.
   const allBuckets:object[][] = [];
 
+  // Keep track of ALL songs we have queued.
   let totalSongs = 0;
+  const allQueued = [] as string[];
 
   queues.forEach((snapshot) => {
     const uQueue = snapshot.val();
@@ -330,7 +367,7 @@ async function updateGlobalPlaylist() {
     if(uQueue === null) return;
 
     let idx = 0;
-    uQueue.forEach(({video, queuedAt}:{video:admin.database.Reference, queuedAt:Date}) => {
+    uQueue.forEach(({video, queuedAt}:{video:string, queuedAt:Date}) => {
       totalSongs++;
 
       // We shift the buckets on by one if the person has already been in the 
@@ -347,8 +384,11 @@ async function updateGlobalPlaylist() {
         video, 
         queuedAt,
         queuedBy:snapshot.key,
-        queuedByDisplayName:users[snapshot.key??""]?.displayName
+        queuedByDisplayName:users[snapshot.key??""]?.displayName ?? "<unknown>"
       });
+
+      allQueued.push(video ?? "");
+
       idx++;
     });
   });
@@ -373,6 +413,7 @@ async function updateGlobalPlaylist() {
     allBucketsObject[idx.toString()] = currentBucketObject;
   }
 
+  await admin.database().ref('allQueued').set(allQueued);
   await bucketsRef.set(allBucketsObject);
 
   const currentVideo = await admin.database().ref('currentVideo').once('value');
@@ -439,22 +480,28 @@ exports.admin_playNextVideo = functions.https.onCall(
   }
 );
 
+type VidInfo = {
+  video:string, 
+  queuedAt:Date, 
+  queuedBy:string
+};
+
 async function nextVideo() {
-  const bucketsRef = admin.database().ref('buckets');
   const currentVidRef = admin.database().ref('currentVideo');
-  const buckets    = await bucketsRef.once('value');
   const playedRef  = admin.database().ref('played');
 
+  const firstBucketRef = admin.database().ref('buckets/0');
+  const firstBucket = (await firstBucketRef.once('value')).val() as VidInfo[] | null;
+
+  const lastPlayedRef = admin.database().ref('lastPlayed');
+
   // If there is no next video, just unset the currently playing video.
-  const bucketsVal = buckets.val() as {video:string, queuedAt:Date, queuedBy:string}[][] | null;
-  if(    bucketsVal === null 
-      || bucketsVal.length === 0
-      || bucketsVal[0].length === 0) {
+  if(firstBucket === null || firstBucket.length === 0) {
     await currentVidRef.remove();
     return;
   }
 
-  const firstVideo     = bucketsVal[0][0];
+  const firstVideo     = firstBucket[0];
   const firstVideoData = await admin.database().ref(`videos/${firstVideo.video}`).once('value');
 
   const secondsDuration = boundDuration(
@@ -491,12 +538,18 @@ async function nextVideo() {
   }).then(sendTimer);
 
   // Add the queueing user to the played list.
-  const addPlayed = playedRef.transaction
-    ((played) => {
-      const p = played ?? [];
-      p.push(firstVideo.queuedBy)
-      return p;
-    });
+  const addPlayed = playedRef.transaction((played) => {
+    const p = played ?? [];
+    p.push(firstVideo.queuedBy)
+    return p;
+  });
+
+  // Add the video to the list of recently played videos.
+  const addTolastPlayedList = lastPlayedRef.transaction((lastPlayed) => {
+    const l = lastPlayed ?? {};
+    l[firstVideo.video] = Date.now();
+    return l;
+  });
 
   // Remove the song from the relevant user's queue.
   const removeFromUserQueue = removeFirstVid(firstVideo.queuedBy);
@@ -504,7 +557,8 @@ async function nextVideo() {
   await Promise.all([
     updateCurrentVideo, 
     addPlayed, 
-    removeFromUserQueue
+    removeFromUserQueue,
+    addTolastPlayedList
   ]);
 }
 
