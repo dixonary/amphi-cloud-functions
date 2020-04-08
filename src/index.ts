@@ -247,9 +247,9 @@ async function getVideoInfo (snapshot:DataSnapshot) {
 
 exports.onEnqueue = functions.database
   .ref('queues/{uid}/{idx}')
-  .onCreate((snapshot) => addMetadataAndUpdateGlobalPlaylist(snapshot));
+  .onCreate((snapshot, context) => addMetadataAndUpdateGlobalPlaylist(snapshot, context));
 
-async function addMetadataAndUpdateGlobalPlaylist(snapshot:DataSnapshot) {
+async function addMetadataAndUpdateGlobalPlaylist(snapshot:DataSnapshot, context:functions.EventContext) {
 
   const videoId = snapshot.val()?.video;
   if(videoId === null || videoId === undefined) return;
@@ -279,6 +279,14 @@ async function addMetadataAndUpdateGlobalPlaylist(snapshot:DataSnapshot) {
   const allQueuedRef = admin.database().ref(`allQueued`);
   const allQueued = (await allQueuedRef.once('value')).val();
   if(allQueued !== null && allQueued.indexOf(videoId) !== -1) {
+    await snapshot.ref.remove();
+    return;
+  }
+
+  // Disallow if user is banned
+  const uid = context.params.uid;
+  const bannedRef = admin.database().ref(`users/${uid}/status`);
+  if((await bannedRef.once('value')).exists()) {
     await snapshot.ref.remove();
     return;
   }
@@ -439,7 +447,7 @@ exports.admin_dequeueVideo = functions.https.onCall(
 );
 
 const dequeueVideo = async (vidId:string, uid:string) => {
-  console.log(uid);
+  
   const queueRef = admin.database().ref(`queues/${uid}`);
   await queueRef.transaction((current:any) => {
     const q = (current as any[] | null) ?? [];
@@ -504,7 +512,8 @@ async function nextVideo() {
   const firstVideo     = firstBucket[0];
   const firstVideoData = await admin.database().ref(`videos/${firstVideo.video}`).once('value');
 
-  const secondsDuration = boundDuration(
+
+  const secondsDuration = await boundDuration(
     getDurationInSeconds(firstVideoData.val().duration)
   );
 
@@ -526,7 +535,7 @@ async function nextVideo() {
       agent:new https.Agent({
         rejectUnauthorized:false
       })
-    }).then(resp => console.log(resp.statusText));
+    });
   };
 
   // Update the currentVid.
@@ -553,7 +562,7 @@ async function nextVideo() {
 
   // Remove the song from the relevant user's queue.
   const removeFromUserQueue = removeFirstVid(firstVideo.queuedBy);
-
+  
   await Promise.all([
     updateCurrentVideo, 
     addPlayed, 
@@ -563,20 +572,18 @@ async function nextVideo() {
 }
 
 
-function boundDuration(rawDuration:number):number {
-  return Math.min(rawDuration, 540);
+const boundDuration = async (rawDuration:number) => {
+  const maxDuration = (await admin.database().ref(`settings/maxPlayTime`).once('value')).val() as number;
+  return Math.min(rawDuration, maxDuration);
 }
 
 /******************************************************************************/
 /* Convert an ISO-standard duration to a regular duration. */
 function getDurationInSeconds(isoDuration:string):number {
-  console.log(isoDuration);
 
   const DURATION_REGEX = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/;
   const dur_match = isoDuration.match(DURATION_REGEX);
   if(dur_match === null) return 60;
-
-  console.log(dur_match);
 
   const hours:number = parseInt(dur_match[1] ?? "0");
   const mins:number  = parseInt(dur_match[2] ?? "0");
