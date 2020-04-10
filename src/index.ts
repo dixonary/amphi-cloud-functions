@@ -267,8 +267,8 @@ async function addMetadataAndUpdateGlobalPlaylist(snapshot:DataSnapshot, context
   const now = Date.now();
   const minTimeDiffRef = admin.database().ref(`settings/minTimeDiff`);
   const minTimeDiff = (await minTimeDiffRef.once('value')).val();
-  const lastPlayedRef = admin.database().ref(`lastPlayed/${videoId}`);
-  const then = await (await lastPlayedRef.once('value')).val();
+  const lastPlayedRef = admin.database().ref(`history/${videoId}`);
+  const then = await (await lastPlayedRef.once('value')).val()?.playedAt;
 
   if(then !== null && then !== undefined && now - then < minTimeDiff * 1000) {
     await snapshot.ref.remove();
@@ -501,7 +501,7 @@ async function nextVideo() {
   const firstBucketRef = admin.database().ref('buckets/0');
   const firstBucket = (await firstBucketRef.once('value')).val() as VidInfo[] | null;
 
-  const lastPlayedRef = admin.database().ref('lastPlayed');
+  const lastPlayedRef = admin.database().ref('history');
 
   // If there is no next video, just unset the currently playing video.
   if(firstBucket === null || firstBucket.length === 0) {
@@ -556,7 +556,10 @@ async function nextVideo() {
   // Add the video to the list of recently played videos.
   const addTolastPlayedList = lastPlayedRef.transaction((lastPlayed) => {
     const l = lastPlayed ?? {};
-    l[firstVideo.video] = Date.now();
+    l[firstVideo.video] = {
+      playedAt: Date.now(),
+      queuedBy: firstVideo.queuedBy
+    };
     return l;
   });
 
