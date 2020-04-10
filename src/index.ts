@@ -557,8 +557,8 @@ async function nextVideo() {
   const addTolastPlayedList = lastPlayedRef.transaction((lastPlayed) => {
     const l = lastPlayed ?? {};
     l[firstVideo.video] = {
-      playedAt: Date.now(),
-      queuedBy: firstVideo.queuedBy
+      ...firstVideo,
+      playedAt: Date.now()
     };
     return l;
   });
