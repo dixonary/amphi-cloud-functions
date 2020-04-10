@@ -170,6 +170,7 @@ async function createFirebaseAccount(
     "uwcs:1833194", //john
     "uwcs:1605235", //thebruce
     "uwcs:1618643", //distributive_law
+    "uwcs:1701133", //ryan
    ];
   const isAdmin = admins.indexOf(uid) !== -1;
   if(isAdmin) 
