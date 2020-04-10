@@ -562,7 +562,7 @@ async function nextVideo() {
 
   // Remove the song from the relevant user's queue.
   const removeFromUserQueue = removeFirstVid(firstVideo.queuedBy);
-  
+
   await Promise.all([
     updateCurrentVideo, 
     addPlayed, 
@@ -574,6 +574,9 @@ async function nextVideo() {
 
 const boundDuration = async (rawDuration:number) => {
   const maxDuration = (await admin.database().ref(`settings/maxPlayTime`).once('value')).val() as number;
+  if(maxDuration === null || maxDuration === 0) {
+    return rawDuration;
+  }
   return Math.min(rawDuration, maxDuration);
 }
 
