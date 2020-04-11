@@ -27,6 +27,7 @@ const UWCS_SCOPES        = ['lanapp'];
 const AMPHI_BACKEND_TIMER_ENDPOINT = 'https://amphi.dixonary.co.uk';
 const AMPHI_BACKEND_TIMER_TOKEN    = functions.config().amphi.token;
 const AMPHI_BACKEND_TIMER_HOOK     = 'https://us-central1-amphi-compsoc.cloudfunctions.net/nextVideoCallback';
+const AMPHI_BACKEND_BAN_HOOK       = 'https://us-central1-amphi-compsoc.cloudfunctions.net/unsuspendCallback';
 
 const UWCS_CLIENT_ID     = functions.config().uwcs.id;
 const UWCS_CLIENT_SECRET = functions.config().uwcs.secret;
@@ -201,6 +202,34 @@ exports.nextVideoCallback = functions.https.onRequest(async (req,res) => {
   await nextVideo();
   res.sendStatus(200);
 });
+
+
+
+/******************************************************************************/
+/* The timer backend will call this once a ban ends. */
+
+exports.unsuspendCallback = functions.https.onRequest(async (req,res) => {
+
+  const nonce = req.body.nonce as string;
+  const [uid, nonceToken] = nonce.split("###");
+
+  console.log("Callback!", uid, nonceToken);
+
+  const user = (await admin.database().ref(`users/${uid}`).once('value')).val();
+
+  // Check that the nonce is correct
+  // As there is no other way to get the nonce than by having been told it,
+  // this is sufficient verification.
+  if(user.suspension_nonce !== nonceToken) {
+    res.sendStatus(409);
+  }
+  else {
+    await unsuspend(uid);
+    res.sendStatus(200);
+  }
+
+});
+
 
 
 /******************************************************************************/
@@ -608,4 +637,64 @@ async function removeFirstVid(uid:string) {
     queuedItems.shift();
     return queuedItems;
   });
+}
+
+
+
+/******************************************************************************/
+/* Suspensions and unsuspensions */
+
+exports.manage_suspension = functions.database
+  .ref(`users/{uid}/status`)
+  .onCreate(async (snapshot, context) => {
+
+    console.log(context.params.uid);
+    console.log(snapshot.val());
+
+    if(snapshot.val() === "banned") return;
+
+    else {
+      // Should be an integer 
+      await suspend(context.params.uid, snapshot.val())
+      
+    }
+});
+
+const suspend = async (uid:string, until:number) => {
+
+  const secondsDuration = Math.round((until - Date.now())/1000);
+
+  console.log(secondsDuration);
+
+  const nonce = uuidv4();
+
+  // Create the callback to end someone's ban.
+  const sendTimer = async () => {
+
+    const form = new FormData();
+    form.append('nonce'   , uid + "###" + nonce);
+    form.append('hook'    , AMPHI_BACKEND_BAN_HOOK);
+    form.append('token'   , AMPHI_BACKEND_TIMER_TOKEN);
+    form.append('duration', secondsDuration);
+  
+    await fetch(AMPHI_BACKEND_TIMER_ENDPOINT, {
+      method:'post', 
+      headers: form.getHeaders(),
+      body:form,
+      agent:new https.Agent({
+        rejectUnauthorized:false
+      })
+    });
+  };
+
+  const setBan = admin.database().ref(`users/${uid}/suspension_nonce`).set(nonce);
+
+  await setBan.then(sendTimer);
+}
+
+const unsuspend = async (uid:string) => {
+  await admin.database().ref(`users/${uid}`).update({
+    nonce:null,
+    status:null
+  })
 }
