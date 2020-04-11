@@ -213,8 +213,6 @@ exports.unsuspendCallback = functions.https.onRequest(async (req,res) => {
   const nonce = req.body.nonce as string;
   const [uid, nonceToken] = nonce.split("###");
 
-  console.log("Callback!", uid, nonceToken);
-
   const user = (await admin.database().ref(`users/${uid}`).once('value')).val();
 
   // Check that the nonce is correct
@@ -648,9 +646,6 @@ exports.manage_suspension = functions.database
   .ref(`users/{uid}/status`)
   .onCreate(async (snapshot, context) => {
 
-    console.log(context.params.uid);
-    console.log(snapshot.val());
-
     if(snapshot.val() === "banned") return;
 
     else {
@@ -663,8 +658,6 @@ exports.manage_suspension = functions.database
 const suspend = async (uid:string, until:number) => {
 
   const secondsDuration = Math.round((until - Date.now())/1000);
-
-  console.log(secondsDuration);
 
   const nonce = uuidv4();
 
