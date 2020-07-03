@@ -48,7 +48,7 @@ exports.uwcsAuth = functions.https.onRequest((req, res) => {
   const redirect_uri = from + "/auth/login";
 
   res
-    .set("Access-Control-Allow-Origin", from)
+    .set("Access-Control-Allow-Origin", from as string | string[] | undefined)
     .set("Access-Control-Allow-Methods", "GET, POST")
     .set(
       "Access-Control-Allow-Headers",
@@ -81,7 +81,7 @@ exports.uwcsAuthCallback = functions.https.onRequest(async (req, res) => {
   const redirect_uri = from + "/auth/login";
 
   res
-    .set("Access-Control-Allow-Origin", from)
+    .set("Access-Control-Allow-Origin", from as string | string[] | undefined)
     .set("Access-Control-Allow-Methods", "GET, POST")
     .set(
       "Access-Control-Allow-Headers",
@@ -234,9 +234,9 @@ exports.newVideoInfo = functions.database
 async function getVideoInfo(snapshot: DataSnapshot) {
   // Note: data in the snapshot should be exactly {loading: true}
   const res = await youtube.videos.list({
-    part: "contentDetails,snippet,status",
+    part: ["contentDetails", "snippet", "status"],
     maxResults: 1,
-    id: snapshot.key,
+    id: [snapshot.key],
   });
 
   if (res.data.items === undefined) return;
@@ -247,7 +247,7 @@ async function getVideoInfo(snapshot: DataSnapshot) {
   const title = item.snippet?.title;
   const channelTitle = item.snippet?.channelTitle;
   const thumbnail = item.snippet?.thumbnails?.default?.url;
-  const embeddable = item.status?.embeddable;
+  const embeddable = item.status?.embeddable ?? false;
 
   await snapshot.ref.set({
     loading: false,
@@ -280,6 +280,13 @@ async function addMetadataAndUpdateGlobalPlaylist(
   const blacklisted = (await blacklistRef.once("value")).val();
 
   if (blacklisted) {
+    await snapshot.ref.remove();
+    return;
+  }
+
+  // Disallow if the video is not embeddable
+  const notEmbeddable = snapshot.val()?.embeddable === false;
+  if (notEmbeddable) {
     await snapshot.ref.remove();
     return;
   }
