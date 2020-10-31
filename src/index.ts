@@ -233,11 +233,20 @@ exports.newVideoInfo = functions.database
 
 async function getVideoInfo(snapshot: DataSnapshot) {
   // Note: data in the snapshot should be exactly {loading: true}
+
+  // We store a lookup time to allow repeated attempts
+  await snapshot.ref.child("lookup_at").set(Date.now());
+
   const res = await youtube.videos.list({
     part: ["contentDetails", "snippet", "status"],
     maxResults: 1,
     id: [snapshot.key],
   });
+
+  if (res.status !== 200) {
+    console.error("Could not get data from server.");
+    await snapshot.ref.remove();
+  }
 
   if (res.data.items === undefined) return;
   const item = res.data.items[0];
@@ -693,3 +702,33 @@ const unsuspend = async (uid: string) => {
     status: null,
   });
 };
+
+/******************************************************************************/
+/* View Counting */
+
+exports.onOnlineStatusChange = functions.database
+  .ref(`users/{uid}/online`)
+  .onWrite(async (change: functions.Change<DataSnapshot>) => {
+    // We assume that an absence of record means not online
+    const isIncrease =
+      (!change.before.exists() || change.before.val() === false) &&
+      change.after.exists() &&
+      change.after.val() === true;
+    const isDecrease =
+      change.before.exists() &&
+      change.before.val() === true &&
+      (!change.after.exists() || change.after.val() === false);
+
+    if (!isIncrease && !isDecrease) return;
+
+    // TODO: This is inefficient for large user counts. Consider revising
+    const allUsers = (await admin.database().ref("users").once("value")).val();
+
+    var numOnline = 0;
+    Object.entries(allUsers).forEach(([k, v]: [string, any]) => {
+      if (v.online) {
+        numOnline++;
+      }
+    });
+    await admin.database().ref("numViewers").set(numOnline);
+  });
