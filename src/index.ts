@@ -590,6 +590,8 @@ async function nextVideo() {
     })
     .then(sendTimer);
 
+  const clearVoteSkips = admin.database().ref("voteskip").remove();
+
   // Add the queueing user to the played list.
   const addPlayed = playedRef.transaction((played) => {
     const p = played ?? [];
@@ -612,6 +614,7 @@ async function nextVideo() {
 
   await Promise.all([
     updateCurrentVideo,
+    clearVoteSkips,
     addPlayed,
     removeFromUserQueue,
     addTolastPlayedList,
@@ -724,11 +727,44 @@ exports.onOnlineStatusChange = functions.database
     // TODO: This is inefficient for large user counts. Consider revising
     const allUsers = (await admin.database().ref("users").once("value")).val();
 
-    var numOnline = 0;
+    let numOnline = 0;
     Object.entries(allUsers).forEach(([k, v]: [string, any]) => {
       if (v.online) {
         numOnline++;
       }
     });
     await admin.database().ref("numViewers").set(numOnline);
+  });
+
+/******************************************************************************/
+/* Vote skipping */
+
+exports.onVoteSkip = functions.database
+  .ref(`voteskip/user/{uid}`)
+  .onCreate(async (x) => {
+    // Compute the total number of requested skips
+    const allVoteSkips = (
+      await admin.database().ref("voteskip/user").once("value")
+    ).val();
+    const numSkips = Object.keys(allVoteSkips).length;
+
+    // Store this value
+    await admin.database().ref("voteskip/count").set(numSkips);
+
+    const numViewers = (
+      await admin.database().ref("numViewers").once("value")
+    ).val();
+    const minSkipViewers = (
+      await admin.database().ref("settings/skipMinViewers").once("value")
+    ).val();
+    const minSkipPct = (
+      await admin.database().ref("settings/skipMinPct").once("value")
+    ).val();
+
+    const isAbovePctThreshold = (numSkips * 100) / numViewers >= minSkipPct;
+    const isAboveViewerThreshold = numSkips >= minSkipViewers;
+
+    if (isAbovePctThreshold && isAboveViewerThreshold) {
+      await nextVideo();
+    }
   });
