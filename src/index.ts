@@ -21,8 +21,9 @@ const FRONTEND_URL = "https://amphi-compsoc.web.app";
 
 const UWCS_URI_TOKEN = "https://uwcs.co.uk/o/token/";
 const UWCS_URI_AUTHORIZE = "https://uwcs.co.uk/o/authorize/";
-const UWCS_URI_PROFILE = `https://uwcs.co.uk/api/me`;
-const UWCS_SCOPES = ["lanapp"];
+const UWCS_URI_PROFILE = `https://uwcs.co.uk/api/profile/`;
+const UWCS_URI_ROLES   = `https://uwcs.co.uk/api/profile/roles/`;
+const UWCS_SCOPES = ["profile", "roles"];
 
 const AMPHI_BACKEND_TIMER_ENDPOINT = "https://amphi.dixonary.co.uk";
 const AMPHI_BACKEND_TIMER_TOKEN = functions.config().amphi.token;
@@ -48,7 +49,7 @@ exports.uwcsAuth = functions.https.onRequest((req, res) => {
   const redirect_uri = from + "/auth/login";
 
   res
-    .set("Access-Control-Allow-Origin", from as string | string[] | undefined)
+    .set("Access-Control-Allow-Origin", "*")
     .set("Access-Control-Allow-Methods", "GET, POST")
     .set(
       "Access-Control-Allow-Headers",
@@ -66,7 +67,7 @@ exports.uwcsAuth = functions.https.onRequest((req, res) => {
     response_type: "code",
     redirect_uri: redirect_uri,
     client_id: UWCS_CLIENT_ID,
-    scope: UWCS_SCOPES,
+    scope: UWCS_SCOPES.join(" "),
   });
 
   res.redirect(UWCS_URI_AUTHORIZE + "?" + params);
@@ -81,7 +82,7 @@ exports.uwcsAuthCallback = functions.https.onRequest(async (req, res) => {
   const redirect_uri = from + "/auth/login";
 
   res
-    .set("Access-Control-Allow-Origin", from as string | string[] | undefined)
+    .set("Access-Control-Allow-Origin", "*")
     .set("Access-Control-Allow-Methods", "GET, POST")
     .set(
       "Access-Control-Allow-Headers",
@@ -107,34 +108,56 @@ exports.uwcsAuthCallback = functions.https.onRequest(async (req, res) => {
     headers: form.getHeaders(),
     body: form,
   })
-    .then((resp) => resp.json())
-    .then(async (data) => {
+    .then((resp:any) => resp.json() as Promise<{access_token:string, refresh_token:string}>)
+    .then(async (data:{access_token:string, refresh_token:string}) => {
       const accessToken = data.access_token;
       const refreshToken = data.refresh_token;
 
-      await fetch(UWCS_URI_PROFILE, {
-        method: "GET",
-        headers: [["Authorization", `Bearer ${accessToken}`]],
-      })
-        .then((userResp) => userResp.json())
-        .then(async (udata) => {
-          const firebaseToken = await createFirebaseAccount(
-            udata.user.username, // Persistent uid
-            udata.nickname, // Current display name
-            accessToken,
-            refreshToken
-          );
+      const [profile, roles] = await Promise.all([
+        fetch(UWCS_URI_PROFILE, {
+          method: "GET",
+          headers: [["Authorization", `Bearer ${accessToken}`]],
+        })
+          .then((userResp:any) => userResp.json()),
+      
+        await fetch(UWCS_URI_ROLES, {
+          method: "GET",
+          headers: [["Authorization", `Bearer ${accessToken}`]],
+        })
+          .then((roleResp:any) => roleResp.json())
+      ]) as [Profile, Roles];
 
-          res.jsonp({ token: firebaseToken });
-        });
+      const firebaseToken = await createFirebaseAccount(
+        profile.user.username,
+        profile.nickname,
+        accessToken,
+        refreshToken,
+        roles.user.groups.map((x:{name:string}) => x.name)
+      );
+      res.jsonp({ token: firebaseToken });
+
     });
 });
+
+type Profile = { user: { username: string }, nickname:string };
+
+// Returned from the UWCS_URI_ROLES endpoint
+type Roles =
+  {
+    nickname?: string,
+    user: {
+      groups: [{ name: string }]
+      is_staff?: boolean,
+      is_superuser?: boolean
+    },
+  };
 
 async function createFirebaseAccount(
   uwcsId: string,
   nickname: string,
   accessToken: string,
-  refreshToken: string
+  refreshToken: string,
+  groups:string[]
 ) {
   // The UID we'll assign to the user.
   const uid = `uwcs:${uwcsId}`;
@@ -168,16 +191,15 @@ async function createFirebaseAccount(
 
   await Promise.all([createUserAccount, storeAccessToken, storeUserInDatabase]);
 
-  // Todo: replace with the exec value from the OAuth scope
-  const admins = [
-    "uwcs:1300831", //dixonary
-    "uwcs:1833194", //john
-    "uwcs:1605235", //thebruce
-    "uwcs:1618643", //distributive_law
-    "uwcs:1701133", //ryan
-  ];
-  const isAdmin = admins.indexOf(uid) !== -1;
+  // Additional people of worthy standing
+  const otherAdmins = [
+    "uwcs:1300831", // dixonary
+    "uwcs:1605235"  // thebruce
+  ]
+
+  const isAdmin = groups.includes("Exec") || otherAdmins.includes(uid);
   if (isAdmin) await admin.database().ref(`users/${uid}/isAdmin`).set(true);
+  else await admin.database().ref(`users/${uid}/isAdmin`).set(false);
 
   return await admin.auth().createCustomToken(uid, { isAdmin });
 }
