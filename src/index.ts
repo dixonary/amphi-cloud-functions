@@ -19,11 +19,12 @@ import { v4 as uuidv4 } from "uuid";
 
 const FRONTEND_URL = "https://amphi-compsoc.web.app";
 
-const UWCS_URI_TOKEN = "https://uwcs.co.uk/o/token/";
-const UWCS_URI_AUTHORIZE = "https://uwcs.co.uk/o/authorize/";
-const UWCS_URI_PROFILE = `https://uwcs.co.uk/api/profile/`;
-const UWCS_URI_ROLES   = `https://uwcs.co.uk/api/profile/roles/`;
-const UWCS_SCOPES = ["profile", "roles"];
+// Changed to these as of 2023-06
+const UWCS_URI_TOKEN = "https://auth.uwcs.co.uk/realms/uwcs/protocol/openid-connect/token";
+const UWCS_URI_AUTHORIZE = "https://auth.uwcs.co.uk/realms/uwcs/protocol/openid-connect/auth";
+const UWCS_URI_PROFILE = `https://auth.uwcs.co.uk/realms/uwcs/protocol/openid-connect/userinfo`;
+const UWCS_SCOPES = ["openid", "profile", "groups"];
+
 
 const AMPHI_BACKEND_TIMER_ENDPOINT = "https://amphi.dixonary.co.uk";
 const AMPHI_BACKEND_TIMER_TOKEN = functions.config().amphi.token;
@@ -32,8 +33,9 @@ const AMPHI_BACKEND_TIMER_HOOK =
 const AMPHI_BACKEND_BAN_HOOK =
   "https://us-central1-amphi-compsoc.cloudfunctions.net/unsuspendCallback";
 
-const UWCS_CLIENT_ID = functions.config().uwcs.id;
-const UWCS_CLIENT_SECRET = functions.config().uwcs.secret;
+// The "uwcs2" creds are the ones for keycloak
+const UWCS_CLIENT_ID = functions.config().uwcs2.id;
+const UWCS_CLIENT_SECRET = functions.config().uwcs2.secret;
 const GOOGLE_API_KEY = functions.config().gapi.key;
 
 const youtube = google.youtube({
@@ -96,68 +98,72 @@ exports.uwcsAuthCallback = functions.https.onRequest(async (req, res) => {
   }
 
   // Make a request to the oauth server for a new key
-  const form = new FormData();
-  form.append("grant_type", "authorization_code");
-  form.append("code", code);
-  form.append("redirect_uri", redirect_uri);
-  form.append("client_id", UWCS_CLIENT_ID);
-  form.append("client_secret", UWCS_CLIENT_SECRET);
+
+  var formInfo = {
+    "grant_type" : "authorization_code",
+    "code":code as string,
+    "redirect_uri": redirect_uri,
+    "client_id":UWCS_CLIENT_ID,
+    "client_secret": UWCS_CLIENT_SECRET
+  }
+
+  function urlencodeFormData(fd:{[k:string]:string}){
+    var s = '';
+    function encode(s:string){ return encodeURIComponent(s).replace(/%20/g,'+'); }
+    for(const k in fd){
+            s += (s?'&':'') + encode(k)+'='+encode((fd as any)[k]);
+    }
+    return s;
+}
+
+  // Apparently Keycloak/oauth2 needs this url encoded...
+  const formText = urlencodeFormData(formInfo)
 
   await fetch(UWCS_URI_TOKEN, {
-    method: "post",
-    headers: form.getHeaders(),
-    body: form,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
+    },
+    body: formText
   })
-    .then((resp:any) => resp.json() as Promise<{access_token:string, refresh_token:string}>)
-    .then(async (data:{access_token:string, refresh_token:string}) => {
+
+    .then((resp: any) => resp.json() as Promise<{ access_token: string, refresh_token: string }>)
+    .then(async (data: { access_token: string, refresh_token: string }) => {
+
       const accessToken = data.access_token;
       const refreshToken = data.refresh_token;
 
-      const [profile, roles] = await Promise.all([
+      const profile = await
         fetch(UWCS_URI_PROFILE, {
           method: "GET",
           headers: [["Authorization", `Bearer ${accessToken}`]],
         })
-          .then((userResp:any) => userResp.json()),
-      
-        await fetch(UWCS_URI_ROLES, {
-          method: "GET",
-          headers: [["Authorization", `Bearer ${accessToken}`]],
-        })
-          .then((roleResp:any) => roleResp.json())
-      ]) as [Profile, Roles];
+          .then((userResp: any) => {
+            return userResp.json();
+          }) as UserInfo;
 
       const firebaseToken = await createFirebaseAccount(
-        profile.user.username,
-        profile.nickname,
+        profile.sub,
+        profile.preferred_username,
         accessToken,
         refreshToken,
-        roles.user.groups.map((x:{name:string}) => x.name)
+        profile.groups
       );
       res.jsonp({ token: firebaseToken });
 
     });
 });
 
-type Profile = { user: { username: string }, nickname:string };
+// Returned from the USERINFO endpoint
+type UserInfo = { sub: string, name: string, groups: string[], preferred_username: string, given_name: string, uni_id: string, family_name: string, email: string };
 
-// Returned from the UWCS_URI_ROLES endpoint
-type Roles =
-  {
-    nickname?: string,
-    user: {
-      groups: [{ name: string }]
-      is_staff?: boolean,
-      is_superuser?: boolean
-    },
-  };
 
 async function createFirebaseAccount(
   uwcsId: string,
   nickname: string,
   accessToken: string,
   refreshToken: string,
-  groups:string[]
+  groups: string[]
 ) {
   // The UID we'll assign to the user.
   const uid = `uwcs:${uwcsId}`;
@@ -193,16 +199,24 @@ async function createFirebaseAccount(
 
   // Additional people of worthy standing
   const otherAdmins = [
-    "uwcs:1300831", // dixonary
-    "uwcs:1605235"  // thebruce
+    "uwcs:9f274aa0-b427-4291-8f7e-3ce070e35d77", // dixonary
   ]
 
-  const isAdmin = groups.includes("Exec") || otherAdmins.includes(uid);
+  const isAdmin = groups.includes("exec") || otherAdmins.includes(uid);
   if (isAdmin) await admin.database().ref(`users/${uid}/isAdmin`).set(true);
   else await admin.database().ref(`users/${uid}/isAdmin`).set(false);
 
   return await admin.auth().createCustomToken(uid, { isAdmin });
 }
+
+exports.admin_createNonAffiliatedUser = functions.https.onCall(
+  async ({ displayName }: any, context: CallableContext) => {
+    const isAdmin = await checkAdmin(context);
+    if (!isAdmin) return "";
+    const token = await createFirebaseAccount(`NAU_${displayName}`, displayName, "", "", []);
+    return token;
+  }
+);
 
 /******************************************************************************/
 /* The timer backend will call this once a timer ends. */
